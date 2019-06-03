@@ -80,6 +80,11 @@ typedef struct WSI_WINDOW_STATE {
     RECT                       RestoreRect;                /* The RECT describing the window position and size prior to entering fullscreen mode, in physical pixels. */
     DWORD                      RestoreStyle;               /* The window style used for the window prior to entering fullscreen mode. */
     DWORD                      RestoreStyleEx;             /* The extended window style used for the window prior to entering fullscreen mode. */
+    uint8_t                   *BackBufferMemory;
+    uint32_t                   BackBufferWidth;
+    uint32_t                   BackBufferHeight;
+    uint32_t                   BackBufferStride;
+    BITMAPINFO                 BackBufferInfo;
     WIN32API_DISPATCH          Win32Api;
 } WSI_WINDOW_STATE;
 
@@ -136,6 +141,65 @@ QueryMonitorGeometry
     GetMonitorInfo(monitor, o_monitorinfo);
 }
 
+static int
+ResizeBackBuffer
+(
+    struct WSI_WINDOW_STATE* window,
+    uint32_t          physical_x_px,
+    uint32_t          physical_y_px
+)
+{
+    BITMAPINFOHEADER *hdr =&window->BackBufferInfo.bmiHeader;
+    uint8_t     *prev_mem = window->BackBufferMemory;
+    uint8_t     *bmap_mem = nullptr;
+    uint32_t    prev_x_px = window->BackBufferWidth;
+    uint32_t    prev_y_px = window->BackBufferHeight;
+    size_t      num_bytes =(size_t) physical_x_px * (size_t) physical_y_px * 4;
+
+    if (physical_x_px == prev_x_px && physical_y_px == prev_y_px && prev_mem) {
+        // There's no need to resize.
+        return 0;
+    }
+    ZeroMemory(&window->BackBufferInfo, sizeof(BITMAPINFO));
+    hdr->biSize       = sizeof(window->BackBufferInfo.bmiHeader);
+    hdr->biWidth      = (LONG )physical_x_px;
+    hdr->biHeight     =-(LONG )physical_y_px;
+    hdr->biPlanes     = 1;
+    hdr->biBitCount   = 32;
+    hdr->biCompression= BI_RGB;
+
+    if ((bmap_mem = (uint8_t*)VirtualAlloc(nullptr, num_bytes, MEM_RESERVE | MEM_COMMIT, PAGE_READWRITE)) == nullptr) {
+        // Keep the prior backbuffer since memory allocation failed.
+        return -1;
+    }
+    window->BackBufferMemory = bmap_mem;
+    window->BackBufferWidth  = physical_x_px;
+    window->BackBufferHeight = physical_y_px;
+    window->BackBufferStride = physical_x_px * 4;
+    if (prev_mem != nullptr) {
+        VirtualFree(prev_mem, 0, MEM_RELEASE);
+    }
+    return 0;
+}
+
+static void
+PresentBackBuffer
+(
+    struct WSI_WINDOW_STATE* window,
+    HDC                          dc
+)
+{
+    int32_t dst_x = 0;
+    int32_t dst_y = 0;
+    int32_t src_x = 0;
+    int32_t src_y = 0;
+    int32_t dst_w = LogicalToPhysicalPixels(window->ClientSizeX, window->OutputDpiX);
+    int32_t dst_h = LogicalToPhysicalPixels(window->ClientSizeY, window->OutputDpiY);
+    int32_t src_w = window->BackBufferWidth;  // Already in physical pixels.
+    int32_t src_h = window->BackBufferHeight; // Already in physical pixels.
+    StretchDIBits(dc, dst_x, dst_y, dst_w, dst_h, src_x, src_y, src_w, src_h, window->BackBufferMemory, &window->BackBufferInfo, DIB_RGB_COLORS, SRCCOPY);
+}
+
 /* @summary Handle the WM_CREATE message.
  * This routine retrieves the properties of the display associated with the window, and resizes the window to account for borders and chrome.
  * @param window Data associated with the window.
@@ -159,15 +223,19 @@ WSI_WndProc_WM_CREATE
     UINT                     dpi_y = USER_DEFAULT_SCREEN_DPI;
     DWORD                    style =(DWORD) GetWindowLongPtr(hwnd, GWL_STYLE);
     DWORD                 ex_style =(DWORD) GetWindowLongPtr(hwnd, GWL_EXSTYLE);
+    uint32_t             phys_x_px;
+    uint32_t             phys_y_px;
     RECT                        rc;
 
     UNREFERENCED_PARAMETER(wparam);
     UNREFERENCED_PARAMETER(lparam);
     winapi->GetDpiForMonitor(monitor, MDT_EFFECTIVE_DPI, &dpi_x, &dpi_y);
+    phys_x_px = LogicalToPhysicalPixels(window->ClientSizeX, dpi_x);
+    phys_y_px = LogicalToPhysicalPixels(window->ClientSizeY, dpi_y);
 
     rc.left   = rc.top = 0;
-    rc.right  = LogicalToPhysicalPixels(window->ClientSizeX, dpi_x);
-    rc.bottom = LogicalToPhysicalPixels(window->ClientSizeY, dpi_y);
+    rc.right  =(LONG) phys_x_px;
+    rc.bottom =(LONG) phys_y_px;
     AdjustWindowRectEx(&rc, style, FALSE, ex_style);
     SetWindowPos(hwnd, nullptr, 0, 0, rc.right-rc.left, rc.bottom-rc.top, SWP_NOACTIVATE|SWP_NOMOVE|SWP_NOZORDER);
 
@@ -179,6 +247,7 @@ WSI_WndProc_WM_CREATE
     window->OutputDpiY  = dpi_y;
     window->WindowSizeX = PhysicalToLogicalPixels((uint32_t)(rc.right-rc.left), dpi_x);
     window->WindowSizeY = PhysicalToLogicalPixels((uint32_t)(rc.bottom-rc.top), dpi_y);
+    ResizeBackBuffer(window, phys_x_px, phys_y_px);
     return 0;
 }
 
@@ -263,6 +332,8 @@ WSI_WndProc_WM_DPICHANGED
     UINT          dpi_y = HIWORD(wparam);
     DWORD         style =(DWORD) GetWindowLong(hwnd, GWL_STYLE);
     DWORD      ex_style =(DWORD) GetWindowLong(hwnd, GWL_EXSTYLE);
+    uint32_t  phys_x_px = LogicalToPhysicalPixels(window->ClientSizeX, dpi_x);
+    uint32_t  phys_y_px = LogicalToPhysicalPixels(window->ClientSizeY, dpi_y);
     RECT     *suggested =(RECT*)(lparam);
     RECT             rc;
     MONITORINFO moninfo;
@@ -276,8 +347,8 @@ WSI_WndProc_WM_DPICHANGED
         }
         rc.left    = suggested->left;
         rc.top     = suggested->top;
-        rc.right   = suggested->left + LogicalToPhysicalPixels(window->ClientSizeX, dpi_x);
-        rc.bottom  = suggested->top  + LogicalToPhysicalPixels(window->ClientSizeY, dpi_y);
+        rc.right   = suggested->left + phys_x_px;
+        rc.bottom  = suggested->top  + phys_y_px;
         AdjustWindowRectEx(&rc, style, FALSE, ex_style);
         SetWindowPos(hwnd, nullptr, rc.left, rc.top, rc.right-rc.left, rc.bottom-rc.top, SWP_NOACTIVATE|SWP_NOZORDER);
     } else { /* fullscreen borderless */
@@ -291,6 +362,7 @@ WSI_WndProc_WM_DPICHANGED
     window->WindowSizeX = PhysicalToLogicalPixels((uint32_t)(rc.right-rc.left), dpi_x);
     window->WindowSizeY = PhysicalToLogicalPixels((uint32_t)(rc.bottom-rc.top), dpi_y);
     window->EventFlags |= WSI_WINDOW_EVENT_FLAG_SIZE_CHANGED | flags;
+    ResizeBackBuffer(window, phys_x_px, phys_y_px);
     return 0;
 }
 
@@ -398,8 +470,8 @@ WSI_WndProc_WM_SIZE
     }
 
     /* The window is visible, and the size did change.
-     * TODO: Resize the backbuffer.
      */
+    ResizeBackBuffer(window, phy_client_w, phy_client_h);
 
     if (is_fullscreen) {
         status |= WSI_WINDOW_STATUS_FLAG_FULLSCREEN;
@@ -443,6 +515,8 @@ WSI_WndProc_WM_SHOWWINDOW
         HMONITOR          monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST);
         UINT                dpi_x = USER_DEFAULT_SCREEN_DPI;
         UINT                dpi_y = USER_DEFAULT_SCREEN_DPI;
+        uint32_t        phys_x_px;
+        uint32_t        phys_y_px;
         RECT                   rc;
 
         GetWindowRect(hwnd, &rc);
@@ -454,10 +528,13 @@ WSI_WndProc_WM_SHOWWINDOW
         window->WindowSizeX  = PhysicalToLogicalPixels((uint32_t)(rc.right-rc.left), dpi_x);
         window->WindowSizeY  = PhysicalToLogicalPixels((uint32_t)(rc.bottom-rc.top), dpi_y);
         GetClientRect(hwnd , &rc);
+        phys_x_px            =(uint32_t)(rc.right - rc.left);
+        phys_y_px            =(uint32_t)(rc.bottom - rc.top);
         window->ClientSizeX  = PhysicalToLogicalPixels((uint32_t)(rc.right-rc.left), dpi_x);
         window->ClientSizeY  = PhysicalToLogicalPixels((uint32_t)(rc.bottom-rc.top), dpi_y);
         window->OutputDpiX   = dpi_x;
         window->OutputDpiY   = dpi_y;
+        ResizeBackBuffer(window, phys_x_px, phys_y_px);
     } else { /* window is being hidden */
         window->StatusFlags &=~WSI_WINDOW_STATUS_FLAG_VISIBLE;
         window->StatusFlags &=~WSI_WINDOW_STATUS_FLAG_ACTIVE;
@@ -519,6 +596,28 @@ WSI_WndProc_WM_SYSCOMMAND
 }
 
 static LRESULT CALLBACK
+WSI_WndProc_WM_PAINT
+(
+    struct WSI_WINDOW_STATE* window,
+    HWND                       hwnd,
+    WPARAM                   wparam,
+    LPARAM                   lparam
+)
+{
+    PAINTSTRUCT ps;
+    HDC         dc;
+    
+    if (window->BackBufferMemory != nullptr) {
+        dc = BeginPaint(window->Win32Handle, &ps);
+        PresentBackBuffer(window, dc);
+        EndPaint(window->Win32Handle, &ps);
+        return 0;
+    } else {
+        return DefWindowProc(hwnd, WM_PAINT, wparam, lparam);
+    }
+}
+
+static LRESULT CALLBACK
 WSI_WndProc
 (
     HWND     hwnd,
@@ -555,6 +654,11 @@ WSI_WndProc
         case WM_SIZE:
             { // Update size and detect monitor/DPI changes.
               result = WSI_WndProc_WM_SIZE(state, hwnd, wparam, lparam);
+            } break;
+
+        case WM_PAINT:
+            { // Present the back buffer contents to the window client area.
+              result = WSI_WndProc_WM_PAINT(state, hwnd, wparam, lparam);
             } break;
 
         case WM_ACTIVATE:
@@ -677,6 +781,7 @@ wWinMain
     if ((int32_t)(virtual_y + dim_y_px) > (int32_t)(rc.bottom - rc.top)) {
         dim_y_px = (rc.bottom - rc.top) - virtual_y;
     }
+    ZeroMemory(&ws, sizeof(WSI_WINDOW_STATE));
     ws.StatusFlags    = WSI_WINDOW_STATUS_FLAGS_NONE;
     ws.EventFlags     = WSI_WINDOW_EVENT_FLAGS_NONE;
     ws.OutputDpiX     = USER_DEFAULT_SCREEN_DPI;
@@ -707,6 +812,13 @@ wWinMain
         }
         if (ws.EventFlags & WSI_WINDOW_EVENT_FLAG_DESTROYED) {
             break;
+        }
+        if (ws.StatusFlags & WSI_WINDOW_STATUS_FLAG_VISIBLE) {
+            if (ws.BackBufferMemory != nullptr) {
+                HDC dc = GetDC(ws.Win32Handle);
+                PresentBackBuffer(&ws, dc);
+                ReleaseDC(ws.Win32Handle, dc);
+            }
         }
         Sleep(16);
     }
