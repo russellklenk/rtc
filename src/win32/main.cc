@@ -1,14 +1,27 @@
 // main.cc: Give our application a well-behaved window and backbuffer to render into 
 // and handle user input and presentation.
-
-#include <stddef.h>
-#include <stdint.h>
+#include <stdio.h>
+#include <stdarg.h>
+#include <assert.h>
 #include <Windows.h>
 #include <shellapi.h>
 #include <ShellScalingApi.h>
 
-static WCHAR const *WSI_WndTitle     = L"The Ray Tracer Challenge";
-static WCHAR const *WSI_WndClassName = L"WSI_WndClass_rtc";
+#include "rtc.h"
+#include "display.h"
+
+/* @summary Specify the title of the main application window.
+ */
+static WCHAR const             *WSI_WndTitle     = L"The Ray Tracer Challenge";
+
+/* @summary Specify the name of the Win32 Window Class for the main application window.
+ */
+static WCHAR const             *WSI_WndClassName = L"WSI_WndClass_rtc";
+
+/* @summary Define a pointer to the global window object.
+ * This is used by rtcGetFrameBuffer to retrieve the framebuffer.
+ */
+static struct WSI_WINDOW_STATE *g_WindowState    = nullptr;
 
 /* @summary Convert from physical to logical pixels.
  * @param _dim The value to convert, specified in physical pixels.
@@ -87,6 +100,36 @@ typedef struct WSI_WINDOW_STATE {
     BITMAPINFO                 BackBufferInfo;
     WIN32API_DISPATCH          Win32Api;
 } WSI_WINDOW_STATE;
+
+/* @summary Helper function to emit printf-style output to OutputDebugString.
+ * The output can be viewed in the VS debugger output window or using DbgView.
+ * @param format A nul-terminated wide character string following printf formatting conventions.
+ * @param ... Substitution arguments for the format string.
+ */
+static void
+DebugPrintfW
+(
+    LPCWSTR format, 
+    ...
+)
+{
+    WCHAR buffer[2048];
+    va_list       args;
+    size_t      mchars = sizeof(buffer) / sizeof(WCHAR);
+    int         nchars;
+
+    va_start(args, format);
+    nchars = vswprintf_s(buffer, format, args);
+    va_end(args);
+    if (nchars < 0) {
+        assert(0 && "Error formatting debug output");
+        OutputDebugStringW(L"Error formatting debug output.\n");
+        return;
+    }
+    UNREFERENCED_PARAMETER(mchars);
+    assert(nchars  <  (int)mchars && "Increase DebugPrintfW buffer size");
+    OutputDebugStringW(buffer);
+}
 
 static HRESULT WINAPI
 SetProcessDpiAwareness_Stub
@@ -698,6 +741,26 @@ WSI_WndProc
     } return result;
 }
 
+RTC_API(int32_t)
+rtcGetFrameBuffer
+(
+    struct RTC_FRAMEBUFFER *o_framebuffer
+)
+{
+    if (g_WindowState && o_framebuffer && g_WindowState->BackBufferMemory) {
+        o_framebuffer->Base   = g_WindowState->BackBufferMemory;
+        o_framebuffer->Width  = g_WindowState->BackBufferWidth;
+        o_framebuffer->Height = g_WindowState->BackBufferHeight;
+        o_framebuffer->Stride = g_WindowState->BackBufferStride;
+        return 0;
+    } else {
+        if (o_framebuffer) {
+            ZeroMemory(o_framebuffer, sizeof(RTC_FRAMEBUFFER));
+        }
+        return -1;
+    }
+}
+
 int WINAPI
 wWinMain
 (
@@ -762,11 +825,11 @@ wWinMain
         wndclass.style         = CS_HREDRAW | CS_VREDRAW;
         wndclass.hbrBackground =(HBRUSH) GetStockObject(WHITE_BRUSH);
         if (RegisterClassEx(&wndclass) == FALSE) {
-            // 
+            error_code = GetLastError();
+            DebugPrintfW(L"RTC: Failed to register window class with Win32 error %08X.\n", error_code);
+            return (int) error_code;
         }
     }
-    // See display_window_d3d12.cc for a decent window starting point.
-    // See handmade hero day 003 for backbuffer creation.
 
     // The main window is always created on the primary display, centered 
     // and with chrome. The user can use Alt+Enter to toggle fullscreen 
@@ -796,9 +859,14 @@ wWinMain
     ws.RestoreStyleEx = style_ex;
     ws.Win32Api       = win32;
     if ((hwnd = CreateWindowEx(style_ex, WSI_WndClassName, WSI_WndTitle, style, virtual_x, virtual_y, dim_x_px, dim_y_px, nullptr, nullptr, curr_instance, (LPVOID)& ws)) == nullptr) {
-        // Window creation failed.
-        return (int) GetLastError();
+        error_code = GetLastError();
+        DebugPrintfW(L"RTC: Failed to create %ux%u window at %d,%d. Win32 error %08X.\n", dim_x_px, dim_y_px, virtual_x, virtual_y, error_code);
+        return (int) error_code;
     } ShowWindow(hwnd, SW_SHOW);
+
+    // Now that the main window exists, set the global reference.
+    // This allows the framebuffer to be retrieved.
+    g_WindowState = &ws;
 
     // Update the main window at a set interval.
     for ( ; ; ) {
@@ -811,6 +879,8 @@ wWinMain
             DispatchMessage(&msg);
         }
         if (ws.EventFlags & WSI_WINDOW_EVENT_FLAG_DESTROYED) {
+            // The window can no longer be rendered into.
+            g_WindowState = nullptr;
             break;
         }
         if (ws.StatusFlags & WSI_WINDOW_STATUS_FLAG_VISIBLE) {
