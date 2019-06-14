@@ -131,6 +131,10 @@ DebugPrintfW
     OutputDebugStringW(buffer);
 }
 
+/* @summary Implement a fallback for SetProcessDpiAwareness for platforms where that function is not available.
+ * @param level One of the values of the PROCESS_DPI_AWARENESS enumeration.
+ * @return An HRESULT indicating the result of the operation. Use the SUCCEEDED and FAILED macros to check the result.
+ */
 static HRESULT WINAPI
 SetProcessDpiAwareness_Stub
 (
@@ -145,6 +149,14 @@ SetProcessDpiAwareness_Stub
     }
 }
 
+/* @summary Implement a fallback for GetDpiForMonitor for platforms where that function is not available.
+ * Only the MDT_EFFECTIVE_DPI MONITOR_DPI_TYPE is supported.
+ * @param monitor The monitor to query.
+ * @param type One of the values of the MONITOR_DPI_TYPE enumeration. Only MDT_EFFECTIVE_DPI is supported.
+ * @param dpi_x On return, this location is updated with the horizontal DPI setting of the display.
+ * @param dpi_y On return, this location is updated with the vertical DPI setting of the display.
+ * @return An HRESULT indicating the result of the operation. Use the SUCCEEDED and FAILED macros to check the result.
+ */
 static HRESULT WINAPI
 GetDpiForMonitor_Stub
 (
@@ -170,6 +182,10 @@ GetDpiForMonitor_Stub
     }
 }
 
+/* @summary Retrieve the position and size attributes of a given monitor.
+ * @param o_monitorinfo The MONITORINFO structure to populate.
+ * @param monitor The handle of the monitor to query, or null to retrieve the attributes of the default monitor.
+ */
 static void
 QueryMonitorGeometry
 (
@@ -184,6 +200,12 @@ QueryMonitorGeometry
     GetMonitorInfo(monitor, o_monitorinfo);
 }
 
+/* @summary Re-allocate the backbuffer in response to a change in the size of the window client area.
+ * @param window The window that was resized.
+ * @param physical_x_px The desired backbuffer width, in physical pixels.
+ * @param physical_y_px The desired backbuffer height, in physical pixels.
+ * @return Zero if the resize is successful, or non-zero if backbuffer allocation fails.
+ */
 static int
 ResizeBackBuffer
 (
@@ -225,6 +247,10 @@ ResizeBackBuffer
     return 0;
 }
 
+/* @summary Blit the backbuffer to the window client area.
+ * @param window The state associated with the window.
+ * @param dc The window device context used to render into the window.
+ */
 static void
 PresentBackBuffer
 (
@@ -638,6 +664,14 @@ WSI_WndProc_WM_SYSCOMMAND
     return DefWindowProc(hwnd, WM_SYSCOMMAND, wparam, lparam);
 }
 
+/* @summary Handle the WM_PAINT message.
+ * This routine blits the backbuffer to the window.
+ * @param window Data associated with the window.
+ * @param hwnd The window handle.
+ * @param wparam Additional data associated with the message.
+ * @param lparam Additional data associated with the message.
+ * @return A message-specific result code.
+ */
 static LRESULT CALLBACK
 WSI_WndProc_WM_PAINT
 (
@@ -660,6 +694,13 @@ WSI_WndProc_WM_PAINT
     }
 }
 
+/* @summary Handle messages sent to the main application window.
+ * @param hwnd The window handle.
+ * @param msg The message identifier.
+ * @param wparam Additional data associated with the message.
+ * @param lparam Additional data associated with the message.
+ * @return A message-specific result code.
+ */
 static LRESULT CALLBACK
 WSI_WndProc
 (
