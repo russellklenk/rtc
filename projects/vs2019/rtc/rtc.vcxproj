@@ -169,11 +169,15 @@
     </Link>
   </ItemDefinitionGroup>
   <ItemGroup>
+    <ClCompile Include="..\..\..\src\rtcmath.cc" />
+    <ClCompile Include="..\..\..\src\rtctest.cc" />
     <ClCompile Include="..\..\..\src\win32\main.cc" />
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="..\..\..\include\display.h" />
     <ClInclude Include="..\..\..\include\rtc.h" />
+    <ClInclude Include="..\..\..\include\rtcmath.h" />
+    <ClInclude Include="..\..\..\include\rtctest.h" />
   </ItemGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.targets" />
   <ImportGroup Label="ExtensionTargets">

@@ -10,6 +10,20 @@
 #include "rtc.h"
 #include "display.h"
 
+#ifdef __cplusplus
+extern "C" {
+#endif
+
+RTC_API(int32_t)
+rtcRunUnitTests
+(
+    void
+);
+
+#ifdef __cplusplus
+}; /* extern "C" */
+#endif
+
 /* @summary Specify the title of the main application window.
  */
 static WCHAR const             *WSI_WndTitle     = L"The Ray Tracer Challenge";
@@ -805,10 +819,10 @@ rtcGetFrameBuffer
 int WINAPI
 wWinMain
 (
-    HINSTANCE curr_instance,
-    HINSTANCE prev_instance,
-    LPWSTR          cmdline,
-    int             showcmd
+    _In_     HINSTANCE curr_instance,
+    _In_opt_ HINSTANCE prev_instance,
+    _In_     LPWSTR          cmdline,
+    _In_     int             showcmd
 )
 {
     HWND               hwnd = nullptr;
@@ -846,6 +860,12 @@ wWinMain
         win32.GetDpiForMonitor           = GetDpiForMonitor_Stub;
         win32.SetProcessDpiAwareness     = SetProcessDpiAwareness_Stub;
         win32.ModuleHandle_Shcore        = nullptr;
+    }
+
+    // Execute unit tests. Do not proceed if any tests fail.
+    if (rtcRunUnitTests() != 0) {
+        DebugPrintfW(L"RTC: One or more unit tests failed.\n");
+        return -1;
     }
 
     // SetProcessDpiAwareness must be called prior to calling -any- other graphics functions.
